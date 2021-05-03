@@ -1,0 +1,5 @@
+build/
+dist/
+mythic.egg-info/
+mythic_payloadtype_container.egg-info/
+mythic_payloadtype_container/.DS_Store
