@@ -167,7 +167,7 @@ async def callback(message: aio_pika.IncomingMessage):
                         except Exception as pa:
                             await send_status(
                                 message=f"[-] {hostname} failed to parse arguments for {message_json['command']}: \n"
-                                + str(e),
+                                + str(pa),
                                 command="command_transform",
                                 status="error",
                                 reference_id=reference_id,
@@ -179,7 +179,7 @@ async def callback(message: aio_pika.IncomingMessage):
                         except Exception as va:
                             await send_status(
                                 message=f"[-] {message_json['command']} has arguments with invalid values: \n"
-                                + str(e),
+                                + str(va),
                                 command="command_transform",
                                 status="error",
                                 reference_id=reference_id,

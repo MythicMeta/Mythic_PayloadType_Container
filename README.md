@@ -12,12 +12,12 @@ pip install mythic-payloadtype-container
 
 ## How to use
 
-This container reports to mythic as version 6 (PyPi version 0.0.41).
+This container reports to mythic as version 6 (PyPi version 0.0.42).
 
 For the main execution of the heartbeat and service functionality, simply import and start the service:
 ```
 from mythic_payloadtype_container import mythic_service
-mythic_service.start_service_and_heartbeat()
+mythic_service.start_service_and_heartbeat(debug=False)
 ```
 You can also pass `debug=True` to the `start_service_and_heartbeat()` function to get detailed debugging information.
 
