@@ -12,14 +12,18 @@ from . import PayloadBuilder
 from pathlib import Path
 from importlib import import_module, invalidate_caches
 from .config import settings
+from functools import partial
 
 # set the global hostname variable
 hostname = ""
 output = ""
 exchange = None
+channel = None
+queue = None
+connection = None
 container_files_path = ""
 
-container_version = "6"
+container_version = "7"
 
 
 def print_flush(msg):
@@ -287,6 +291,7 @@ async def callback(message: aio_pika.IncomingMessage):
                 return
         elif command == "sync_classes":
             await sync_classes(reference_id)
+            pass
         elif command == "process_container":
             try:
                 # pt.task.PAYLOAD_TYPE.command_transform.taskID
@@ -316,6 +321,55 @@ async def callback(message: aio_pika.IncomingMessage):
         elif command == "exit_container":
             print_flush("[*] Got exit container command, exiting!")
             sys.exit(1)
+        elif command == "task_callback_function":
+            try:
+                # pt.task.PAYLOAD_TYPE.task_callback_function.taskID
+                message_json = json.loads(
+                    base64.b64decode(message.body).decode("utf-8"), strict=False
+                )
+                final_task = None
+                for cls in MythicCommandBase.CommandBase.__subclasses__():
+                    if getattr(cls, "cmd") == message_json["command"]:
+                        Command = cls(Path(container_files_path))
+                        task = MythicCommandBase.MythicTask(
+                            message_json["task"],
+                            args=Command.argument_class(message_json["params"]),
+                        )
+                        try:
+                            await task.args.parse_arguments()
+                        except Exception as pa:
+                            await send_status(
+                                message=f"[-] {hostname} failed to parse arguments for {message_json['command']}: \n"
+                                + str(pa),
+                                command="task_callback_function",
+                                status="error",
+                                reference_id=reference_id,
+                                username=username
+                            )
+                            return
+                        if hasattr(Command, message_json["function_name"]) and callable(getattr(Command, message_json["function_name"])):
+                            # the message_json["function_name"] function is defined in the Command.callback_class and is callable
+                            final_task = await getattr(Command, message_json["function_name"])(task, message_json["subtask"], message_json["subtask_group_name"])
+                            # send the results of the check
+                            await send_status(
+                                message=str(final_task),
+                                command="task_callback_function",
+                                status=final_task.status.value,
+                                reference_id=reference_id,
+                                username=username
+                            )
+                                
+                        
+            except Exception as e:
+                await send_status(
+                    message="[-] Mythic error while creating/running task_callback_function: \n"
+                    + str(e),
+                    command="task_callback_function",
+                    status=MythicCommandBase.MythicStatus.CallbackError.value,
+                    reference_id=reference_id,
+                    username=username
+                )
+                return
         else:
             print("Unknown command: {}".format(command))
 
@@ -344,53 +398,82 @@ async def sync_classes(reference_id: str = ""):
         sys.exit(1)
 
 
+async def connect_to_rabbitmq(debug: bool = False):
+    global hostname
+    global exchange
+    global channel
+    global queue
+    global connection
+    global container_files_path
+    if queue is not None:
+        return
+    hostname = settings.get("name", "hostname")
+    if hostname == "hostname":
+        hostname = socket.gethostname()
+    if debug:
+        print_flush("[*] Setting hostname (which should match payload type name exactly) to: " + hostname)
+    container_files_path = os.path.abspath(settings.get("container_files_path", "/Mythic/"))
+    if not os.path.exists(container_files_path):
+        os.makedirs(container_files_path)
+    while True:
+        try:
+            if debug:
+                print_flush("[*] Trying to connect to rabbitmq at: " + settings.get("host", "127.0.0.1") + ":" + str(settings.get("port", 5672)))
+            connection = await aio_pika.connect_robust(
+                host=settings.get("host", "127.0.0.1"),
+                port=settings.get("port", 5672),
+                login=settings.get("username", "mythic_user"),
+                password=settings.get("password", "mythic_password"),
+                virtualhost=settings.get("virtual_host", "mythic_vhost"),
+            )
+            if debug:
+                print_flush("[*] connecting to channel")
+            channel = await connection.channel()
+            # declare our heartbeat exchange that everybody will publish to, but only the mythic server will are about
+            if debug:
+                print_flush("[*] declaring exchange")
+            exchange = await channel.declare_exchange(
+                "mythic_traffic", aio_pika.ExchangeType.TOPIC
+            )
+            # get a random queue that only the mythic server will use to listen on to catch all heartbeats
+            queue = await channel.declare_queue(hostname + "_tasking")
+            # bind the queue to the exchange so we can actually catch messages
+            await queue.bind(
+                exchange="mythic_traffic", routing_key="pt.task.{}.#".format(hostname)
+            )
+
+            # just want to handle one message at a time so we can clean up and be ready
+            await channel.set_qos(prefetch_count=100)
+            return
+        except Exception as e:
+            print_flush(str(e))
+            await asyncio.sleep(2)
+            continue
+
+
 async def heartbeat(debug: bool):
+    global exchange
+    global queue
+    global channel
+    global hostname
     try:
-        if debug:
-            print_flush("[*] heartbeat - Opening rabbitmq_config.json")
-        hostname = settings.get("name", "hostname")
-        if hostname == "hostname":
-            hostname = socket.gethostname()
-        if debug:
-            print_flush("[*] heartbeat - Setting hostname (which should match payload type name exactly) to: " + hostname)
-        while True:
-            try:
-                if debug:
-                    print_flush("[*] heartbeat - Trying to connect to rabbitmq at: " + settings.get("host", "127.0.0.1"))
-                connection = await aio_pika.connect_robust(
-                    host=settings.get("host", "127.0.0.1"),
-                    login=settings.get("username", "mythic_user"),
-                    password=settings.get("password", "mythic_password"),
-                    virtualhost=settings.get("virtual_host", "mythic_vhost"),
-                )
-                if debug:
-                    print_flush("[*] heartbeat - connecting to channel")
-                channel = await connection.channel()
-                # declare our heartbeat exchange that everybody will publish to, but only the mythic server will are about
-                if debug:
-                    print_flush("[*] heartbeat - declaring exchange")
-                exchange = await channel.declare_exchange(
-                    "mythic_traffic", aio_pika.ExchangeType.TOPIC
-                )
-            except Exception as e:
-                print_flush(str(e))
-                await asyncio.sleep(2)
-                continue
-            print_flush("[*] heartbeat - starting heartbeat message loop")
+        if exchange is not None:
             while True:
                 try:
-                    # routing key is ignored for fanout, it'll go to anybody that's listening, which will only be the server
+                    queue = await channel.get_queue(hostname + "_tasking")
                     await exchange.publish(
-                        aio_pika.Message("heartbeat".encode()),
-                        routing_key="pt.heartbeat.{}.{}".format(hostname, container_version),
+                        aio_pika.Message("".encode()),
+                        routing_key="pt.heartbeat.{}.{}.{}".format(hostname, container_version, str(queue.declaration_result.consumer_count)),
                     )
+                    #print("[*] heartbeat - container count {}".format(queue.declaration_result.consumer_count))
                     await asyncio.sleep(10)
                 except Exception as e:
-                    if debug:
-                        print_flush("[*] heartbeat - exception in heartbeat message loop!!")
+                    print_flush("[*] heartbeat - exception in heartbeat message loop!!")
                     print_flush(str(e))
-                    # if we get an exception here, break out to the bigger loop and try to connect again
-                    break
+                    sys.exit(1)
+        else:
+            print_flush("[-] Failed to process heartbeat functionality, exiting container:\n " + str(traceback.format_exc()))
+            sys.exit(1)
     except Exception as h:
         print_flush("[-] Failed to process heartbeat functionality, exiting container:\n " + str(traceback.format_exc()))
         sys.exit(1)
@@ -400,48 +483,12 @@ async def mythic_service(debug: bool):
     global hostname
     global exchange
     global container_files_path
-    connection = None
-    hostname = settings.get("name", "hostname")
-    if hostname == "hostname":
-        hostname = socket.gethostname()
-    if debug:
-        print_flush("[*] mythic_service - setting hostname (which should be the same as payload type) to " + hostname)
-    container_files_path = os.path.abspath(settings.get("container_files_path", "/Mythic/"))
-    if not os.path.exists(container_files_path):
-        os.makedirs(container_files_path)
-    if debug:
-        print_flush("[*] mythic_service - trying to connect to rabbitmq at: " + settings.get("host", "127.0.0.1"))
-    while connection is None:
-        try:
-            connection = await aio_pika.connect_robust(
-                host=settings.get("host", "127.0.0.1"),
-                login=settings.get("username", "mythic_user"),
-                password=settings.get("password", "mythic_password"),
-                virtualhost=settings.get("virtual_host", "mythic_vhost"),
-            )
-        except Exception as e:
-            print_flush("[-] mythic_service - failed to connect to rabbitmq, trying again...")
-            await asyncio.sleep(1)
+    global queue
+
     try:
-        if debug:
-            print_flush("[*] mythic_service - opening channel")
-        channel = await connection.channel()
-        # declare our exchange
-        if debug:
-            print_flush("[*] mythic_service - declaring queue exchange")
-        exchange = await channel.declare_exchange(
-            "mythic_traffic", aio_pika.ExchangeType.TOPIC
-        )
-        # get a random queue that only the mythic server will use to listen on to catch all heartbeats
-        queue = await channel.declare_queue("", exclusive=True)
-        # bind the queue to the exchange so we can actually catch messages
-        await queue.bind(
-            exchange="mythic_traffic", routing_key="pt.task.{}.#".format(hostname)
-        )
-        # just want to handle one message at a time so we can clean up and be ready
-        await channel.set_qos(prefetch_count=100)
         print_flush("[*] mythic_service - Waiting for messages in mythic_service with version {}.".format(container_version))
         task = queue.consume(callback)
+        print_flush("[*] mythic_service - total instances of {} container running: {}".format(hostname, queue.declaration_result.consumer_count + 1))
         await sync_classes()
         result = await asyncio.wait_for(task, None)
     except Exception as e:
@@ -449,10 +496,62 @@ async def mythic_service(debug: bool):
         sys.exit(1)
 
 
+async def rabbit_mythic_rpc_callback(
+    exchange: aio_pika.Exchange, message: aio_pika.IncomingMessage
+):
+    with message.process():
+        try:
+            message_json = json.loads(message.body.decode())
+            # request = { "action": "function_name", "command": "command name"}
+            response = {"status": "error", "error": "command's dynamic_query_function not found or not callable"}
+            for cls in MythicCommandBase.CommandBase.__subclasses__():
+                if getattr(cls, "cmd") == message_json["command"]:
+                    Command = cls(Path(container_files_path))
+                    CommandArgs = Command.argument_class("")
+                    # now iterate over the args to find the one with name=request["action"]
+                    for key, command_param in CommandArgs.args.items():
+                        if command_param.name == message_json["action"] and callable(command_param.dynamic_query_function):
+                            response = await command_param.dynamic_query_function(message_json["callback"])
+                    break
+        except Exception as e:
+            print(str(e))
+            sys.stdout.flush()
+            response = {"status": "error", "error": str(e)}
+        try:
+            await exchange.publish(
+                aio_pika.Message(body=json.dumps(response).encode(), correlation_id=message.correlation_id),
+                routing_key=message.reply_to,
+            )
+        except Exception as e:
+            print(
+                "[-] Exception trying to send message back to container for rpc! " + str(sys.exc_info()[-1].tb_lineno) + " " + str(e)
+            )
+            sys.stdout.flush()
+
+async def connect_and_consume_mythic_rpc(debug):
+    global channel
+    global hostname
+    # get a random queue that only the apfell server will use to listen on to catch all heartbeats
+    if debug:
+        print_flush("[*] Declaring container specific mythic rpc queue in connect_and_consume_mythic_rpc")
+    queue = await channel.declare_queue("{}_mythic_rpc_queue".format(hostname), auto_delete=True)
+    await channel.set_qos(prefetch_count=10)
+    try:
+        if debug:
+            print_flush("[*] Starting to consume callbacks in connect_and_consume_mythic_rpc")
+        task = await queue.consume(
+            partial(rabbit_mythic_rpc_callback, channel.default_exchange)
+        )
+    except Exception as e:
+        print_flush("[-] Exception in connect_and_consume_mythic_rpc .consume: {}".format(str(sys.exc_info()[-1].tb_lineno) + " " + str(e)))
+        sys.exit(1)
+
 # start our service
 def start_service_and_heartbeat(debug: bool = False):
     loop = asyncio.get_event_loop()
-    asyncio.gather(heartbeat(debug), mythic_service(debug))
+    connect_task = loop.create_task(connect_to_rabbitmq(debug))
+    loop.run_until_complete(connect_task)
+    asyncio.gather(heartbeat(debug), mythic_service(debug), connect_and_consume_mythic_rpc(debug))
     loop.run_forever()
 
 def get_version_info():

@@ -17,12 +17,12 @@ class RPCResponse:
         self._raw_resp = resp
         if resp["status"] == "success":
             self.status = MythicCommandBase.MythicStatus.Success
-            self.response = resp["response"] if "response" in resp else ""
+            self.response = resp["response"] if "response" in resp else None
             self.error = None
         else:
             self.status = MythicCommandBase.MythicStatus.Error
             self.error = resp["error"]
-            self.response = None
+            self.response = resp["response"] if "response" in resp else None
 
     @property
     def status(self):
@@ -95,6 +95,6 @@ class MythicRPC(MythicBaseRPC):
                 output = await rpc.call(function_name, kwargs=dict(**func_kwargs))
             return RPCResponse(output)
         except Exception as e:
-            print(str(sys.exc_info()[-1].tb_lineno) +str(e))
+            print(str(sys.exc_info()[-1].tb_lineno) + " " + str(e))
             sys.stdout.flush()
-            return None
+            return RPCResponse({"status": "error", "error": "Failed to call function:\n" + str(e)})

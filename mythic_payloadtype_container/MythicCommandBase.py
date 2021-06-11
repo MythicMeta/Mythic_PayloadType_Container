@@ -13,7 +13,8 @@ class MythicStatus(str, Enum):
     Completed = "completed"
     Processed = "processed"
     Processing = "processing"
-
+    Delegating = "delegating subtasks"
+    CallbackError = "task callback error"
 
 class ParameterType(str, Enum):
     String = "String"
@@ -31,7 +32,6 @@ class ParameterType(str, Enum):
     Payload = "PayloadList"
     ConnectionInfo = "AgentConnect"
     LinkInfo = "LinkInfo"
-    DynamicQuery = "DynamicQuery"
 
 class CommandAttributes():
     def __init__(self,
@@ -73,7 +73,7 @@ class CommandParameter:
         choice_filter_by_command_attributes: dict = None,
         choices_are_all_commands: bool = False,
         choices_are_loaded_commands: bool = False,
-        dynamic_query_func: callable = None,
+        dynamic_query_function: callable = None,
         ui_position: int = None
     ):
         self.name = name
@@ -95,7 +95,9 @@ class CommandParameter:
         self.choice_filter_by_command_attributes = choice_filter_by_command_attributes if choice_filter_by_command_attributes is not None else {}
         self.choices_are_all_commands = choices_are_all_commands
         self.choices_are_loaded_commands = choices_are_loaded_commands
-        self.dynamic_query_func = dynamic_query_func
+        self.dynamic_query_function = dynamic_query_function
+        if not callable(dynamic_query_function) and dynamic_query_function is not None:
+            raise Exception("dynamic_query_function is not callable")
         self.ui_position = ui_position
 
     @property
@@ -217,9 +219,9 @@ class CommandParameter:
             "choices_are_loaded_commands": self.choices_are_loaded_commands,
             "choices_are_all_commands": self.choices_are_all_commands,
             "choice_filter_by_command_attributes": self.choice_filter_by_command_attributes,
-            "ui_position": self.ui_position
+            "ui_position": self.ui_position,
+            "dynamic_query_function": self.dynamic_query_function.__name__ if callable(self.dynamic_query_function) else None
         }
-
 
 class TypeValidators:
     def validateString(self, val):
@@ -290,13 +292,11 @@ class TypeValidators:
         "ChoiceMultiple": validateChooseMultiple,
         "PayloadList": validatePayloadList,
         "AgentConnect": validateAgentConnect,
-        "LinkInfo": validateAgentConnect,
-        "DynamicQuery": validatePass
+        "LinkInfo": validateAgentConnect
     }
 
     def validate(self, type: ParameterType, val: any):
         return self.switch[type.value](self, val)
-
 
 class TaskArguments(metaclass=ABCMeta):
     def __init__(self, command_line: str):
@@ -381,11 +381,9 @@ class TaskArguments(metaclass=ABCMeta):
     async def parse_arguments(self):
         pass
 
-
 class Callback:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
-
 
 class BrowserScript:
     # if a browserscript is specified as part of a PayloadType, then it's a support script
@@ -411,7 +409,6 @@ class BrowserScript:
             return {"script": code, "name": self.script_name, "author": self.author, "for_new_ui": self.for_new_ui}
         except Exception as e:
             return {"script": str(e), "name": self.script_name, "author": self.author, "for_new_ui": self.for_new_ui}
-
 
 class MythicTask:
     def __init__(
@@ -439,8 +436,14 @@ class MythicTask:
         self.status = MythicStatus.Success
         if status is not None:
             self.status = status
-        self.stdout = ""
-        self.stderr = ""
+        self.stdout = taskinfo["stdout"] if "stdout" in taskinfo else ""
+        self.stderr = taskinfo["stderr"] if "stderr" in taskinfo else ""
+        self.subtask_callback_function = taskinfo["subtask_callback_function"]
+        self.group_callback_function = taskinfo["group_callback_function"]
+        self.completed_callback_function = taskinfo["completed_callback_function"]
+        self.subtask_group_name = taskinfo["subtask_group_name"]
+        # self.tags is an array of tags to associate with the task
+        self.tags = taskinfo["tags"]
 
     def get_status(self) -> MythicStatus:
         return self.status
@@ -455,6 +458,15 @@ class MythicTask:
         self.stderr = stderr
 
     def __str__(self):
+        subtask_callback_function = self.subtask_callback_function
+        if callable(subtask_callback_function):
+            subtask_callback_function = subtask_callback_function.__name__
+        group_callback_function = self.group_callback_function
+        if callable(group_callback_function):
+            group_callback_function = group_callback_function.__name__
+        completed_callback_function = self.completed_callback_function
+        if callable(completed_callback_function):
+            completed_callback_function = completed_callback_function.__name__
         return json.dumps({"args": str(self.args),
             "stdout": self.stdout,
             "stderr": self.stderr,
@@ -464,7 +476,12 @@ class MythicTask:
             "opsec_post_blocked": self.opsec_post_blocked,
             "opsec_post_message": self.opsec_post_message,
             "opsec_post_bypass_role": self.opsec_post_bypass_role,
-            "display_params": self.display_params
+            "display_params": self.display_params,
+            "subtask_callback_function": subtask_callback_function,
+            "group_callback_function": group_callback_function,
+            "completed_callback_function": completed_callback_function,
+            "subtask_group_name": self.subtask_group_name,
+            "tags": "\n".join(self.tags)
                           })
 
 
@@ -567,7 +584,10 @@ class CommandBase(metaclass=ABCMeta):
     @property
     def opsec_class(self):
         pass
-    
+
+    @property
+    def script_only(self):
+        pass
 
     @abstractmethod
     async def create_tasking(self, task: MythicTask) -> MythicTask:
@@ -603,5 +623,6 @@ class CommandBase(metaclass=ABCMeta):
             "parameters": params,
             "opsec": opsec,
             "attributes": attributes.to_json(),
+            "script_only": self.script_only if self.script_only is not None else False,
             **bscript,
         }
