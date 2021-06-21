@@ -23,7 +23,7 @@ queue = None
 connection = None
 container_files_path = ""
 
-container_version = "7"
+container_version = "8"
 
 
 def print_flush(msg):
@@ -74,7 +74,7 @@ async def callback(message: aio_pika.IncomingMessage):
             try:
                 # pt.task.PAYLOAD_TYPE.create_payload_with_code.UUID
                 message_json = json.loads(
-                    base64.b64decode(message.body).decode("utf-8"), strict=False
+                    message.body, strict=False
                 )
                 # go through all the data from rabbitmq to make the proper classes
                 c2info_list = []
@@ -156,7 +156,7 @@ async def callback(message: aio_pika.IncomingMessage):
                 # pt.task.PAYLOAD_TYPE.command_transform.taskID
                 
                 message_json = json.loads(
-                    base64.b64decode(message.body).decode("utf-8"), strict=False
+                    message.body, strict=False
                 )
                 final_task = None
                 for cls in MythicCommandBase.CommandBase.__subclasses__():
@@ -325,7 +325,7 @@ async def callback(message: aio_pika.IncomingMessage):
             try:
                 # pt.task.PAYLOAD_TYPE.task_callback_function.taskID
                 message_json = json.loads(
-                    base64.b64decode(message.body).decode("utf-8"), strict=False
+                    message.body, strict=False
                 )
                 final_task = None
                 for cls in MythicCommandBase.CommandBase.__subclasses__():
