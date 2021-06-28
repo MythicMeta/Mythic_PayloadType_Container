@@ -23,7 +23,7 @@ queue = None
 connection = None
 container_files_path = ""
 
-container_version = "8"
+container_version = "9"
 
 
 def print_flush(msg):
@@ -320,7 +320,8 @@ async def callback(message: aio_pika.IncomingMessage):
                 return
         elif command == "exit_container":
             print_flush("[*] Got exit container command, exiting!")
-            sys.exit(1)
+            print_flush("[*] If this is unexpected, check the Mythic UI for logs as to why this container is tasked to exit")
+            sys.exit(0)
         elif command == "task_callback_function":
             try:
                 # pt.task.PAYLOAD_TYPE.task_callback_function.taskID
