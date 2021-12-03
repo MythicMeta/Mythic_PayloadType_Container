@@ -7,14 +7,27 @@ from pathlib import Path
 from .PayloadBuilder import SupportedOS
 
 
-class MythicStatus(str, Enum):
-    Success = "success"
+class MythicStatus():
     Error = "error"
     Completed = "completed"
     Processed = "processed"
     Processing = "processing"
+    Preprocessing = "preprocessing"
     Delegating = "delegating subtasks"
     CallbackError = "task callback error"
+    Success = "success"
+    def __init__(self, status: str):
+        self.status = status
+    def __str__(self):
+        return self.status
+
+class MythicRPCStatus():
+    Success = "success"
+    Error = "error"
+    def __init__(self, status: str):
+        self.status = status
+    def __str__(self):
+        return self.status
 
 class ParameterType(str, Enum):
     String = "String"
@@ -26,7 +39,7 @@ class ParameterType(str, Enum):
     Credential_JSON = "Credential-JSON"
     Credential_Account = "Credential-Account"
     Credential_Realm = "Credential-Realm"
-    Credential_Type = ("Credential-Type",)
+    Credential_Type = "Credential-Type"
     Credential_Value = "Credential-Credential"
     Number = "Number"
     Payload = "PayloadList"
@@ -37,9 +50,17 @@ class CommandAttributes():
     def __init__(self,
         spawn_and_injectable: bool = False,
         supported_os: [SupportedOS] = None,
+        builtin: bool = False,
+        suggested_command: bool = False,
+        load_only: bool = False,
+        filter_by_build_parameter: dict = {},
         **kwargs):
         self.spawn_and_injectable = spawn_and_injectable
         self.supported_os = supported_os
+        self.builtin = builtin
+        self.suggested_command = suggested_command
+        self.load_only = load_only
+        self.filter_by_build_parameter = filter_by_build_parameter
         self.additional_items = {}
         for k,v in kwargs.items():
             self.additional_items[k] = v
@@ -51,10 +72,37 @@ class CommandAttributes():
         else:
             r["spawn_and_injectable"] = False
         if self.supported_os is not None:
-            r["supported_os"] = [x.value for x in self.supported_os]
+            r["supported_os"] = [str(x) for x in self.supported_os]
         else:
             r["supported_os"] = []
+        r["builtin"] = self.builtin
+        r["suggested_command"] = self.suggested_command
+        r["load_only"] = self.load_only
+        r["filter_by_build_parameter"] = self.filter_by_build_parameter
         r = {**r, **self.additional_items}
+        return r
+
+class ParameterGroupInfo:
+    def __init__(
+        self,
+        required: bool = True,
+        group_name: str = "Default",
+        ui_position: int = None,
+        **kwargs
+    ):  
+        self.required = required 
+        self.group_name = group_name 
+        self.ui_position = ui_position
+        self.additional_info = {}
+        for k,v in kwargs.items():
+            self.additional_info[k] = v
+
+    def to_json(self):
+        r = {}
+        r["required"] = self.required 
+        r["group_name"] = self.group_name 
+        r["ui_position"] = self.ui_position
+        r = {**r, **self.additional_info}
         return r
 
 class CommandParameter:
@@ -62,9 +110,10 @@ class CommandParameter:
         self,
         name: str,
         type: ParameterType,
+        display_name: str = None,
+        cli_name: str = None,
         description: str = "",
         choices: [any] = None,
-        required: bool = True,
         default_value: any = None,
         validation_func: callable = None,
         value: any = None,
@@ -74,19 +123,27 @@ class CommandParameter:
         choices_are_all_commands: bool = False,
         choices_are_loaded_commands: bool = False,
         dynamic_query_function: callable = None,
-        ui_position: int = None
+        parameter_group_info: [ParameterGroupInfo] = None
     ):
         self.name = name
+        if display_name is None:
+            self.display_name = name
+        else:
+            self.display_name = display_name
+        if cli_name is None:
+            self.cli_name = name 
+        else:
+            self.cli_name = cli_name
         self.type = type
+        self.user_supplied = False # keep track of if this is using the default value or not
         self.description = description
         if choices is None:
             self.choices = []
         else:
             self.choices = choices
-        self.required = required
         self.validation_func = validation_func
         if value is None:
-            self.value = default_value
+            self._value = default_value
         else:
             self.value = value
         self.default_value = default_value
@@ -98,7 +155,9 @@ class CommandParameter:
         self.dynamic_query_function = dynamic_query_function
         if not callable(dynamic_query_function) and dynamic_query_function is not None:
             raise Exception("dynamic_query_function is not callable")
-        self.ui_position = ui_position
+        self.parameter_group_info = parameter_group_info
+        if self.parameter_group_info is None:
+            self.parameter_group_info = [ParameterGroupInfo()]
 
     @property
     def name(self):
@@ -123,14 +182,6 @@ class CommandParameter:
     @description.setter
     def description(self, description):
         self._description = description
-
-    @property
-    def required(self):
-        return self._required
-
-    @required.setter
-    def required(self, required):
-        self._required = required
 
     @property
     def choices(self):
@@ -190,37 +241,43 @@ class CommandParameter:
                             self.name, str(value)
                         )
                     )
+                self.user_supplied = True
                 return
             else:
                 # now we do some verification ourselves based on the type
                 self._value = type_validated
+                self.user_supplied = True
                 return
         self._value = value
+        self.user_supplied = True 
+        return
 
     @property
-    def ui_position(self):
-        return self._ui_position
+    def parameter_group_info(self):
+        return self._parameter_group_info
 
-    @ui_position.setter
-    def ui_position(self, ui_position):
-        self._ui_position = ui_position
+    @parameter_group_info.setter
+    def parameter_group_info(self, parameter_group_info):
+        self._parameter_group_info = parameter_group_info
     
 
     def to_json(self):
         return {
             "name": self._name,
+            "display_name": self.display_name,
+            "cli_name": self.cli_name.replace(" ", "-"),
             "type": self._type.value,
             "description": self._description,
             "choices": "\n".join(self._choices),
-            "required": self._required,
-            "default_value": self._value,
+            "default_value": self.default_value,
+            "value": self.value,
             "supported_agents": ",".join(self._supported_agents),
             "supported_agent_build_parameters": self._supported_agent_build_parameters,
             "choices_are_loaded_commands": self.choices_are_loaded_commands,
             "choices_are_all_commands": self.choices_are_all_commands,
             "choice_filter_by_command_attributes": self.choice_filter_by_command_attributes,
-            "ui_position": self.ui_position,
-            "dynamic_query_function": self.dynamic_query_function.__name__ if callable(self.dynamic_query_function) else None
+            "dynamic_query_function": self.dynamic_query_function.__name__ if callable(self.dynamic_query_function) else None,
+            "parameter_group_info": [x.to_json() for x in self.parameter_group_info] if self.parameter_group_info is not None else [ParameterGroupInfo().to_json()]
         }
 
 class TypeValidators:
@@ -299,8 +356,9 @@ class TypeValidators:
         return self.switch[type.value](self, val)
 
 class TaskArguments(metaclass=ABCMeta):
-    def __init__(self, command_line: str):
+    def __init__(self, command_line: str, tasking_location: str = "command_line"):
         self.command_line = str(command_line)
+        self.tasking_location = tasking_location
 
     @property
     def args(self):
@@ -311,74 +369,153 @@ class TaskArguments(metaclass=ABCMeta):
         self._args = args
 
     def get_arg(self, key: str):
-        if key in self.args:
-            return self.args[key].value
-        else:
-            return None
+        for arg in self.args:
+            if arg.name == key:
+                return arg.value
+        return None
 
     def has_arg(self, key: str) -> bool:
-        return key in self.args
+        for arg in self.args:
+            if arg.name == key:
+                return True
+        return False
 
     def get_commandline(self) -> str:
         return self.command_line
 
+    def get_tasking_location(self) -> str:
+        return self.tasking_location
+
     def is_empty(self) -> bool:
         return len(self.args) == 0
 
-    def add_arg(self, key: str, value, type: ParameterType = ParameterType.String):
-        if key in self.args:
-            self.args[key].value = value
-        else:
-            self.args[key] = CommandParameter(name=key, type=type, value=value)
+    def add_arg(self, key: str, value, type: ParameterType = None, parameter_group_info: [ParameterGroupInfo] = [ParameterGroupInfo()]):
+        found = False
+        for arg in self.args:
+            if arg.name == key:
+                arg.value = value 
+                if type is not None:
+                    arg.type = type 
+                found = True
+        if not found:
+            if type is not None:
+                self.args.append(CommandParameter(name=key, type=type, value=value, parameter_group_info=parameter_group_info))
+            else:
+                self.args.append(CommandParameter(name=key, type=ParameterType.String, value=value, parameter_group_info=parameter_group_info))
 
     def set_arg(self, key: str, value):
-        if key in self.args:
-            self.args[key].value = value
-        else:
+        found = False 
+        for arg in self.args:
+            if arg.name == key:
+                arg.value = value 
+                found = True 
+        if not found:
             self.add_arg(key, value)
 
     def rename_arg(self, old_key: str, new_key: str):
-        if old_key not in self.args:
-            raise Exception("{} not a valid parameter".format(old_key))
-        self.args[new_key] = self.args.pop(old_key)
+        for arg in self.args:
+            if arg.name == old_key:
+                arg.name = new_key
+                return
+        raise Exception("{} not a valid parameter name".format(old_key))
 
     def remove_arg(self, key: str):
-        self.args.pop(key, None)
+        self.args = [x for x in self.args if x.name != key]
 
     def to_json(self):
-        temp = []
-        for k, v in self.args.items():
-            temp.append(v.to_json())
-        return temp
+        return [x.to_json() for x in self.args]
 
-    def load_args_from_json_string(self, command_line: str):
+    def load_args_from_json_string(self, command_line: str) -> None:
         temp_dict = json.loads(command_line)
         for k, v in temp_dict.items():
-            for k2,v2 in self.args.items():
-                if v2.name == k:
-                    v2.value = v
+            for arg in self.args:
+                if arg.name == k or arg.cli_name == k:
+                    arg.value = v
 
-    async def verify_required_args_have_values(self):
-        for k, v in self.args.items():
-            if v.value is None:
-                v.value = v.default_value
-            if v.required and v.value is None:
-                raise ValueError("Required arg {} has no value".format(k))
+    def load_args_from_dictionary(self, dictionary) -> None:
+        for k, v in dictionary.items():
+            for arg in self.args:
+                if arg.name == k or arg.cli_name == k:
+                    arg.value = v
 
-    def __str__(self):
+    def get_parameter_group_name(self) -> str:
+        groupNameOptions = []
+        suppliedArgNames = []
+        if len(self.args) == 0:
+            return "Default"
+        for arg in self.args:
+            for group_info in arg.parameter_group_info:
+                if group_info.group_name not in groupNameOptions:
+                    groupNameOptions.append(group_info.group_name)
+        for arg in self.args:
+            # when determining the group we're in, only look at arguments that have values that were set by the user
+            # default values don't count
+            if arg.value is not None and arg.user_supplied:
+                suppliedArgNames.append(arg.name)
+                groupNameIntersection = []
+                for group_info in arg.parameter_group_info:
+                    if group_info.group_name in groupNameOptions:
+                        groupNameIntersection.append(group_info.group_name)
+                groupNameOptions = groupNameIntersection
+        if len(groupNameOptions) == 0:
+            raise ValueError(f"Supplied Arguments, {suppliedArgNames}, don't match any parameter group") 
+        elif len(groupNameOptions) > 1:
+            raise ValueError(f"Supplied Arguments, {suppliedArgNames}, match more than one parameter group: {groupNameOptions}")
+        else:
+            return groupNameOptions[0]
+
+    def get_parameter_group_arguments(self) -> [CommandParameter]:
+        groupName = self.get_parameter_group_name()
+        group_arguments = []
+        for arg in self.args:
+            matched_arg = False
+            for group_info in arg.parameter_group_info:
+                if group_info.group_name == groupName:
+                    matched_arg = True 
+            if matched_arg:
+                group_arguments.append(arg)
+        return group_arguments
+
+    async def verify_required_args_have_values(self) -> bool:
+        # first we have to establish which parameter group we're in
+        groupName = self.get_parameter_group_name()
+        for arg in self.args:
+            matched_arg = False
+            arg_required = False
+            for group_info in arg.parameter_group_info:
+                if group_info.group_name == groupName:
+                    matched_arg = True 
+                    arg_required = group_info.required 
+            if matched_arg:
+                if arg.value is None:
+                    arg.value = arg.default_value
+                if arg_required and arg.value is None:
+                    raise ValueError("Required arg {} has no value".format(arg.name))
+        return True
+
+    def __str__(self) -> str:
         if len(self.args) > 0:
+            try:
+                groupName = self.get_parameter_group_name()
+            except Exception as e:
+                return self.command_line
             temp = {}
-            for k, v in self.args.items():
-                if isinstance(v.value, bytes):
-                    temp[k] = base64.b64encode(v.value).decode()
-                else:
-                    temp[k] = v.value
+            for arg in self.args:
+                matched_arg = False
+                for group_info in arg.parameter_group_info:
+                    if group_info.group_name == groupName:
+                        matched_arg = True 
+                if matched_arg:
+                    if isinstance(arg.value, bytes):
+                        temp[arg.name] = base64.b64encode(arg.value).decode()
+                    else:
+                        temp[arg.name] = arg.value
             return json.dumps(temp)
         else:
             return self.command_line
 
     @abstractmethod
-    async def parse_arguments(self):
+    async def parse_arguments(self) -> None:
         pass
 
 class Callback:
@@ -405,6 +542,7 @@ class BrowserScript:
                 code = code_file.read_bytes()
                 code = base64.b64encode(code).decode()
             else:
+                raise Exception("Code for Browser Script, " + self.script_name + ", does not exist on disk at path: " + str(code_file))
                 code = ""
             return {"script": code, "name": self.script_name, "author": self.author, "for_new_ui": self.for_new_ui}
         except Exception as e:
@@ -432,10 +570,13 @@ class MythicTask:
         self.opsec_post_bypass_role = taskinfo["opsec_post_bypass_role"]
         self.opsec_post_bypass_user = taskinfo["opsec_post_bypass_user"]
         self.display_params = taskinfo["display_params"]
+        self.command_name = taskinfo["command_name"]
         self.args = args
-        self.status = MythicStatus.Success
+        self.manual_args = None
+        self.status = MythicStatus.Preprocessing
         if status is not None:
-            self.status = status
+            self.status = MythicStatus(status)
+        self.tasking_location = taskinfo["tasking_location"] if "tasking_location" in taskinfo else "command_line"
         self.stdout = taskinfo["stdout"] if "stdout" in taskinfo else ""
         self.stderr = taskinfo["stderr"] if "stderr" in taskinfo else ""
         self.subtask_callback_function = taskinfo["subtask_callback_function"]
@@ -457,7 +598,15 @@ class MythicTask:
     def set_stderr(self, stderr: str):
         self.stderr = stderr
 
+    # if you call override_args with your own values, then we won't use the standard JSON string from self.args
+    #   this combined with command_name can allow you to completely set what gets sent to your agent
+    def override_args(self, args: str):
+        self.manual_args = args
+
     def __str__(self):
+        return json.dumps(self.to_json())
+
+    def to_json(self):
         subtask_callback_function = self.subtask_callback_function
         if callable(subtask_callback_function):
             subtask_callback_function = subtask_callback_function.__name__
@@ -467,23 +616,29 @@ class MythicTask:
         completed_callback_function = self.completed_callback_function
         if callable(completed_callback_function):
             completed_callback_function = completed_callback_function.__name__
-        return json.dumps({"args": str(self.args),
+        command_args = str(self.args)
+        if self.manual_args is not None:
+            command_args = self.manual_args
+        return {
+            "args": command_args,
             "stdout": self.stdout,
             "stderr": self.stderr,
             "opsec_pre_blocked": self.opsec_pre_blocked,
             "opsec_pre_message": self.opsec_pre_message,
             "opsec_pre_bypass_role": self.opsec_pre_bypass_role,
+            "opsec_pre_bypassed": self.opsec_pre_bypassed,
             "opsec_post_blocked": self.opsec_post_blocked,
             "opsec_post_message": self.opsec_post_message,
             "opsec_post_bypass_role": self.opsec_post_bypass_role,
+            "opsec_post_bypassed": self.opsec_post_bypassed,
             "display_params": self.display_params,
             "subtask_callback_function": subtask_callback_function,
             "group_callback_function": group_callback_function,
             "completed_callback_function": completed_callback_function,
             "subtask_group_name": self.subtask_group_name,
-            "tags": "\n".join(self.tags)
-                          })
-
+            "command_name": self.command_name,
+            "tags": self.tags
+                          }
 
 class AgentResponse:
     def __init__(self, response: any, task: MythicTask):
@@ -491,8 +646,17 @@ class AgentResponse:
         self.task = task
 
 class CommandOPSEC(metaclass=ABCMeta):
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
+    def __init__(self, 
+        injection_method: str = "",
+        process_creation: str = "",
+        authentication: str = "",
+        **kwargs):
+        self.injection_method = injection_method
+        self.process_creation = process_creation
+        self.authentication = authentication
+        self.additional_items = {}
+        for k,v in kwargs.items():
+            self.additional_items[k] = v
 
     @property
     @abstractmethod
@@ -514,6 +678,7 @@ class CommandOPSEC(metaclass=ABCMeta):
         temp["injection_method"] = self.injection_method
         temp["process_creation"] = self.process_creation
         temp["authentication"] = self.authentication
+        temp = {**temp, **self.additional_items}
         return temp
 
     @abstractmethod

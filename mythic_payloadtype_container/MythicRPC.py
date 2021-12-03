@@ -20,11 +20,11 @@ class RPCResponse:
     def __init__(self, resp: dict):
         self._raw_resp = resp
         if resp["status"] == "success":
-            self.status = MythicCommandBase.MythicStatus.Success
+            self.status = MythicCommandBase.MythicRPCStatus.Success
             self.response = resp["response"] if "response" in resp else None
             self.error = None
         else:
-            self.status = MythicCommandBase.MythicStatus.Error
+            self.status = MythicCommandBase.MythicRPCStatus.Error
             self.error = resp["error"]
             self.response = resp["response"] if "response" in resp else None
 

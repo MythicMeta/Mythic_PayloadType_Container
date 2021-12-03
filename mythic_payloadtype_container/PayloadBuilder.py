@@ -5,22 +5,28 @@ import base64
 from . import MythicCommandBase
 
 
-class BuildStatus(str, Enum):
+class BuildStatus():
     Success = "success"
     Error = "error"
 
-
-class SupportedOS(str, Enum):
+class SupportedOS():
     Windows = "Windows"
     MacOS = "macOS"
     Linux = "Linux"
     WebShell = "WebShell"
     Chrome = "Chrome"
 
+    def __init__(self, os: str):
+        self.os = os
+    def __str__(self):
+        return self.os
+
 
 class BuildParameterType(str, Enum):
     String = "String"
     ChooseOne = "ChooseOne"
+    Boolean = "Boolean"
+    ChooseMultiple = "ChoiceMultiple"
 
 
 class BuildParameter:
@@ -31,7 +37,7 @@ class BuildParameter:
         description: str = None,
         required: bool = None,
         verifier_regex: str = None,
-        default_value: str = None,
+        default_value: any = None,
         choices: [str] = None,
         value: any = None,
         verifier_func: callable = None,
@@ -112,7 +118,12 @@ class BuildParameter:
                 self.verifier_func(value)
                 self._value = value
             else:
-                self._value = value
+                if isinstance(value, str) and value.lower() == "false":
+                    self._value = False
+                elif isinstance(value, str) and value.lower() == "true":
+                    self._value = True
+                else:
+                    self._value = value
 
     def to_json(self):
         return {
@@ -122,7 +133,7 @@ class BuildParameter:
             "required": self._required,
             "verifier_regex": self._verifier_regex,
             "parameter": self._default_value
-            if self._parameter_type == BuildParameterType.String
+            if self._parameter_type in [BuildParameterType.String, BuildParameterType.Boolean]
             else "\n".join(self.choices),
         }
 
@@ -285,27 +296,28 @@ class PayloadType:
     async def build(self) -> BuildResponse:
         pass
 
-    def get_parameter(self, key):
-        if key in self.build_parameters:
-            return self.build_parameters[key].value
-        else:
-            return None
+    def get_parameter(self, name):
+        for arg in self.build_parameters:
+            if arg.name == name:
+                return arg.value
+        return None
+
 
     async def set_and_validate_build_parameters(self, buildinfo: dict):
         # set values for all of the key-value pairs presented to us
-        for key, bp in self.build_parameters.items():
-            if key in buildinfo and buildinfo[key] is not None:
-                bp.value = buildinfo[key]
+        for bp in self.build_parameters:
+            if bp.name in buildinfo and buildinfo[bp.name] is not None:
+                bp.value = buildinfo[bp.name]
             if bp.required and bp.value is None:
                 raise ValueError(
-                    "{} is a required parameter but has no value".format(key)
+                    "{} is a required parameter but has no value".format(bp.name)
                 )
 
     def get_build_instance_values(self):
         values = {}
-        for key, bp in self.build_parameters.items():
+        for bp in self.build_parameters:
             if bp.value is not None:
-                values[key] = bp.value
+                values[bp.name] = bp.value
         return values
 
     def to_json(self):
@@ -313,12 +325,12 @@ class PayloadType:
             "ptype": self.name,
             "file_extension": self.file_extension,
             "author": self.author,
-            "supported_os": ",".join([x.value for x in self.supported_os]),
+            "supported_os": ",".join([str(x) for x in self.supported_os]),
             "wrapper": self.wrapper,
             "wrapped": self.wrapped_payloads,
             "supports_dynamic_loading": self.supports_dynamic_loading,
             "note": self.note,
-            "build_parameters": [b.to_json() for k, b in self.build_parameters.items()],
+            "build_parameters": [b.to_json() for b in self.build_parameters],
             "c2_profiles": self.c2_profiles,
             "support_scripts": [
                 a.to_json(self.base_path) for a in self.support_browser_scripts
