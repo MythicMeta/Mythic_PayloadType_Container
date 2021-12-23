@@ -356,9 +356,10 @@ class TypeValidators:
         return self.switch[type.value](self, val)
 
 class TaskArguments(metaclass=ABCMeta):
-    def __init__(self, command_line: str, tasking_location: str = "command_line"):
+    def __init__(self, command_line: str, tasking_location: str = "command_line", raw_command_line: str = ""):
         self.command_line = str(command_line)
         self.tasking_location = tasking_location
+        self.raw_command_line = raw_command_line
 
     @property
     def args(self):
@@ -380,8 +381,11 @@ class TaskArguments(metaclass=ABCMeta):
                 return True
         return False
 
-    def get_commandline(self) -> str:
+    def get_command_line(self) -> str:
         return self.command_line
+
+    def get_raw_command_line(self) -> str:
+        return self.raw_command_line
 
     def get_tasking_location(self) -> str:
         return self.tasking_location

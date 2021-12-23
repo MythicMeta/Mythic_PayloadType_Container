@@ -66,10 +66,16 @@ async def send_status(message="", command="", status="", username="", reference_
         sys.exit(1)
 
 
-async def initialize_task(command_class: MythicCommandBase.CommandBase, message_json: dict, command: str, reference_id: str, username: str) -> MythicCommandBase.MythicTask:
+async def initialize_task(command_class: MythicCommandBase.CommandBase, 
+    message_json: dict, 
+    command: str, 
+    reference_id: str, 
+    username: str) -> MythicCommandBase.MythicTask:
     task = MythicCommandBase.MythicTask(
         message_json["task"],
-        args=command_class.argument_class(command_line=message_json["params"], tasking_location=message_json["tasking_location"]),
+        args=command_class.argument_class(command_line=message_json["params"],
+            tasking_location=message_json["tasking_location"],
+            raw_command_line=message_json["task"]["original_params"]),
     )
     try:
         # if tasking came from the command_line or an unknown source, call parse_arguments to deal with unknown text
