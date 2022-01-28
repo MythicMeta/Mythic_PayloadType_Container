@@ -24,8 +24,8 @@ connection = None
 operating_environment = "production"
 container_files_path = ""
 
-container_version = "11"
-PyPi_version = "0.1.0"
+container_version = "12"
+PyPi_version = "0.1.3"
 
 
 def print_flush(msg, override: bool = False):
@@ -75,7 +75,8 @@ async def initialize_task(command_class: MythicCommandBase.CommandBase,
         message_json["task"],
         args=command_class.argument_class(command_line=message_json["params"],
             tasking_location=message_json["tasking_location"],
-            raw_command_line=message_json["task"]["original_params"]),
+            raw_command_line=message_json["task"]["original_params"],
+            task_dictionary=message_json["task"]),
     )
     try:
         # if tasking came from the command_line or an unknown source, call parse_arguments to deal with unknown text
@@ -116,6 +117,7 @@ async def initialize_task(command_class: MythicCommandBase.CommandBase,
         return None
     task.parameter_group_name = task.args.get_parameter_group_name()
     return task
+
 
 async def callback(message: aio_pika.IncomingMessage):
     global hostname

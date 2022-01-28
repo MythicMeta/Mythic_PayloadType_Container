@@ -356,10 +356,16 @@ class TypeValidators:
         return self.switch[type.value](self, val)
 
 class TaskArguments(metaclass=ABCMeta):
-    def __init__(self, command_line: str, tasking_location: str = "command_line", raw_command_line: str = ""):
+    def __init__(self, 
+        command_line: str, 
+        tasking_location: str = "command_line", 
+        raw_command_line: str = "",
+        task_dictionary: dict = {}):
         self.command_line = str(command_line)
         self.tasking_location = tasking_location
         self.raw_command_line = raw_command_line
+        self.task_dictionary = task_dictionary
+        self.parameter_group_name = None
 
     @property
     def args(self):
@@ -443,6 +449,8 @@ class TaskArguments(metaclass=ABCMeta):
                     arg.value = v
 
     def get_parameter_group_name(self) -> str:
+        if self.parameter_group_name is not None:
+            return self.parameter_group_name
         groupNameOptions = []
         suppliedArgNames = []
         if len(self.args) == 0:
@@ -587,6 +595,7 @@ class MythicTask:
         self.group_callback_function = taskinfo["group_callback_function"]
         self.completed_callback_function = taskinfo["completed_callback_function"]
         self.subtask_group_name = taskinfo["subtask_group_name"]
+        self.parameter_group_name = taskinfo["parameter_group_name"]
         # self.tags is an array of tags to associate with the task
         self.tags = taskinfo["tags"]
 
@@ -641,6 +650,7 @@ class MythicTask:
             "completed_callback_function": completed_callback_function,
             "subtask_group_name": self.subtask_group_name,
             "command_name": self.command_name,
+            "parameter_group_name": self.parameter_group_name,
             "tags": self.tags
                           }
 
