@@ -20,6 +20,16 @@ class MythicStatus():
         self.status = status
     def __str__(self):
         return self.status
+    def __eq__(self, obj):
+        # check if self.status == obj
+        if isinstance(obj, str):
+            return self.status == obj 
+        elif isinstance(obj, MythicStatus):
+            return self.status == obj.status 
+        elif isinstance(obj, MythicRPCStatus):
+            return self.status == obj.status
+        else:
+            return False
 
 class MythicRPCStatus():
     Success = "success"
@@ -28,6 +38,15 @@ class MythicRPCStatus():
         self.status = status
     def __str__(self):
         return self.status
+    def __eq__(self, obj):
+        if isinstance(obj, str):
+            return self.status == obj 
+        elif isinstance(obj, MythicRPCStatus):
+            return self.status == obj.status 
+        elif ininstance(obj, MythicStatus):
+            return self.status == obj.status
+        else:
+            return False
 
 class ParameterType(str, Enum):
     String = "String"
@@ -562,7 +581,7 @@ class BrowserScript:
 
 class MythicTask:
     def __init__(
-        self, taskinfo: dict, args: TaskArguments, status: MythicStatus = None
+        self, taskinfo: dict, args: TaskArguments
     ):
         self.id = taskinfo["id"]
         self.original_params = taskinfo["original_params"]
@@ -586,8 +605,8 @@ class MythicTask:
         self.args = args
         self.manual_args = None
         self.status = MythicStatus.Preprocessing
-        if status is not None:
-            self.status = MythicStatus(status)
+        if 'status'in taskinfo and taskinfo['status'] is not None:
+            self.status = MythicStatus(taskinfo['status'])
         self.tasking_location = taskinfo["tasking_location"] if "tasking_location" in taskinfo else "command_line"
         self.stdout = taskinfo["stdout"] if "stdout" in taskinfo else ""
         self.stderr = taskinfo["stderr"] if "stderr" in taskinfo else ""

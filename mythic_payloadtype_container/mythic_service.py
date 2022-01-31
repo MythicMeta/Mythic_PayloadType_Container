@@ -25,7 +25,7 @@ operating_environment = "production"
 container_files_path = ""
 
 container_version = "12"
-PyPi_version = "0.1.3"
+PyPi_version = "0.1.7"
 
 
 def print_flush(msg, override: bool = False):
