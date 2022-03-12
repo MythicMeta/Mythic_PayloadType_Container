@@ -488,9 +488,29 @@ class TaskArguments(metaclass=ABCMeta):
                     if group_info.group_name in groupNameOptions:
                         groupNameIntersection.append(group_info.group_name)
                 groupNameOptions = groupNameIntersection
+            # this gives us the groups that our currently supplied commands belong to, but doesn't account for some groups still needing other parameters
+            # need to loop through available options and see if we have all of the needed parameters
         if len(groupNameOptions) == 0:
             raise ValueError(f"Supplied Arguments, {suppliedArgNames}, don't match any parameter group") 
         elif len(groupNameOptions) > 1:
+            finalMatchingGroupNames = []
+            for groupNameOption in groupNameOptions:
+                has_all_values = True
+                for arg in self.args:
+                    for group_info in arg.parameter_group_info:
+                        if group_info.group_name == groupNameOption:
+                            if group_info.required and not arg.user_supplied:
+                                # one of our matching parameter groups that we've supplied values for requires this parameter, but the user didn't supply one
+                                # so this parameter group can't be the one we use
+                                has_all_values = False 
+                if has_all_values:
+                    finalMatchingGroupNames.append(groupNameOption)
+            if len(finalMatchingGroupNames) == 0:
+                raise ValueError(f"Supplied Arguments, {suppliedArgNames}, match more than one parameter group, {groupNameOptions}, and all require at least one more value from the user")
+            elif len(finalMatchingGroupNames) > 1:
+                raise ValueError(f"Supplied Arguments, {suppliedArgNames}, match more than one parameter group, {finalMatchingGroupNames}")
+            else:
+                return finalMatchingGroupNames[0]
             raise ValueError(f"Supplied Arguments, {suppliedArgNames}, match more than one parameter group: {groupNameOptions}")
         else:
             return groupNameOptions[0]
