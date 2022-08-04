@@ -10,7 +10,7 @@ README = (HERE / "README.md").read_text()
 # This call to setup() does all the work
 setup(
     name="mythic_payloadtype_container",
-    version="0.1.8",
+    version="0.1.14",
     description="Functionality for Mythic Payload Type Containers",
     long_description=README,
     long_description_content_type="text/markdown",
@@ -25,7 +25,6 @@ setup(
     ],
     packages=["mythic_payloadtype_container"],
     include_package_data=True,
-    install_requires=["aio_pika", "dynaconf"],
-    entry_points={
-    },
+    install_requires=["aio_pika==6.8.0", "dynaconf"],
+    entry_points={},
 )

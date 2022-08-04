@@ -12,7 +12,7 @@ pip install mythic-payloadtype-container
 
 ## How to use
 
-This container reports to mythic as version 11 (PyPi version 0.1.8). Use it with Mythic version 2.3.0.
+This container reports to mythic as version 11 (PyPi version 0.1.10). Use it with Mythic version 2.3.0.
 
 For the main execution of the heartbeat and service functionality, simply import and start the service:
 ```
