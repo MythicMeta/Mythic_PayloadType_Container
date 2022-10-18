@@ -15,17 +15,180 @@ from .config import settings
 from functools import partial
 
 # set the global hostname variable
-hostname = ""
 output = ""
-exchange = None
-channel = None
-queue = None
-connection = None
 operating_environment = "production"
-container_files_path = ""
+
+
+class mythicConnectionClass:
+    def __init__(self):
+        self.exchange = None
+        self.channel = None
+        self.queue = None
+        self.mythic_rpc_queue = None
+        self.connection = None
+        self.hostname = None
+        self.container_files_path = ""
+
+    def set_hostname(self, hostname):
+        self.hostname = hostname
+
+    def get_hostname(self):
+        return self.hostname
+
+    def set_container_files_path(self, container_files_path):
+        self.container_files_path = container_files_path
+
+    def get_container_files_path(self):
+        return self.container_files_path
+
+    async def get_queue(self):
+        if self.queue is None:
+            await self.connect()
+            return self.queue
+        else:
+            return self.queue
+
+    async def get_mythic_rpc_queue(self):
+        if self.mythic_rpc_queue is None:
+            await self.connect()
+            return self.mythic_rpc_queue
+        else:
+            return self.mythic_rpc_queue
+
+    async def get_channel(self):
+        if self.channel is None:
+            await self.connect()
+            return self.channel
+        else:
+            return self.channel
+
+    async def connect(self):
+        while True:
+            try:
+                self.connection = None
+                self.channel = None
+                self.queue = None
+                self.mythic_rpc_queue = None
+                self.exchange = None
+                print_flush(
+                    "[*] Trying to connect to rabbitmq at: "
+                    + settings.get("host", "127.0.0.1")
+                    + ":"
+                    + str(settings.get("port", 5672)),
+                    override=True,
+                )
+                self.connection = await aio_pika.connect_robust(
+                    host=settings.get("host", "127.0.0.1"),
+                    port=settings.get("port", 5672),
+                    login=settings.get("username", "mythic_user"),
+                    password=settings.get("password", "mythic_password"),
+                    virtualhost="mythic_vhost",
+                )
+                print_flush("[*] connecting to channel, then declaring exchange")
+                self.channel = await self.connection.channel()
+                # declare our heartbeat exchange that everybody will publish to, but only the mythic server will are about
+                print_flush("[*] declaring exchange, then declaring queue")
+                self.exchange = await self.channel.declare_exchange(
+                    "mythic_traffic", aio_pika.ExchangeType.TOPIC
+                )
+                # get a random queue that only the mythic server will use to listen on to catch all heartbeats
+                self.queue = await self.channel.declare_queue(
+                    self.hostname + "_tasking"
+                )
+                self.mythic_rpc_queue = await self.channel.declare_queue(
+                    "{}_mythic_rpc_queue".format(self.hostname), auto_delete=True
+                )
+                print_flush("[*] binding to exchange, then ready to go")
+                # bind the queue to the exchange so we can actually catch messages
+                await self.queue.bind(
+                    exchange="mythic_traffic",
+                    routing_key="pt.task.{}.#".format(self.hostname),
+                )
+
+                # just want to handle one message at a time so we can clean up and be ready
+                await self.channel.set_qos(
+                    prefetch_count=int(settings.get("queue_prefetch", "10"))
+                )
+                print_flush("[+] Ready to go!", override=True)
+                return
+            except Exception as e:
+                print_flush(str(e), override=True)
+                await asyncio.sleep(failedConnectRetryDelay)
+
+    async def send_status(
+        self, message="", command="", status="", username="", reference_id=""
+    ):
+        # status is success or error
+        while True:
+            try:
+                message_body = aio_pika.Message(message.encode())
+                # Sending the message
+                await self.exchange.publish(
+                    message_body,
+                    routing_key="pt.status.{}.{}.{}.{}.{}.{}".format(
+                        self.hostname,
+                        command,
+                        reference_id,
+                        status,
+                        username,
+                        container_version,
+                    ),
+                )
+                return
+            except Exception as e:
+                print_flush(
+                    "Exception in send_status: {}".format(str(traceback.format_exc()))
+                )
+                await self.connect()
+
+    async def send_heartbeat(self):
+        try:
+            await self.exchange.publish(
+                aio_pika.Message("".encode()),
+                routing_key="pt.heartbeat.{}.{}.{}".format(
+                    self.hostname,
+                    container_version,
+                    str(
+                        (
+                            await myConnection.get_queue()
+                        ).declaration_result.consumer_count
+                    ),
+                ),
+            )
+        except Exception as e:
+            print_flush(
+                "[*] heartbeat - exception in heartbeat message loop:\n "
+                + str(traceback.format_exc()),
+                override=True,
+            )
+            await self.connect()
+
+    async def exchange_publish(self, response, exchange, message):
+        try:
+            await exchange.publish(
+                aio_pika.Message(
+                    body=json.dumps(response).encode(),
+                    correlation_id=message.correlation_id,
+                ),
+                routing_key=message.reply_to,
+            )
+        except Exception as e:
+            print_flush(
+                "[-] Exception trying to send message back to container for rpc! "
+                + str(sys.exc_info()[-1].tb_lineno)
+                + " "
+                + str(e),
+                override=True,
+            )
+
+
+myConnection = mythicConnectionClass()
+
 
 container_version = "12"
-PyPi_version = "0.1.14"
+PyPi_version = "0.1.16"
+
+failedConnectRetryDelay = 2
 
 
 def print_flush(msg, override: bool = False):
@@ -47,23 +210,6 @@ def import_all_agent_functions():
             for el in dir(module):
                 if "__" not in el:
                     globals()[el] = getattr(module, el)
-
-
-async def send_status(message="", command="", status="", username="", reference_id=""):
-    global exchange
-    # status is success or error
-    try:
-        message_body = aio_pika.Message(message.encode())
-        # Sending the message
-        await exchange.publish(
-            message_body,
-            routing_key="pt.status.{}.{}.{}.{}.{}.{}".format(
-                hostname, command, reference_id, status, username, container_version
-            ),
-        )
-    except Exception as e:
-        print_flush("Exception in send_status: {}".format(str(traceback.format_exc())))
-        sys.exit(1)
 
 
 async def initialize_task(
@@ -100,10 +246,10 @@ async def initialize_task(
     except Exception as pa:
         message = {
             "task": task.to_json(),
-            "message": f"[-] {hostname} failed to parse arguments for {message_json['command']}: \n"
+            "message": f"[-] {myConnection.get_hostname()} failed to parse arguments for {message_json['command']}: \n"
             + str(traceback.format_exc()),
         }
-        await send_status(
+        await myConnection.send_status(
             message=json.dumps(message),
             command=command,
             status="parse_arguments_error",
@@ -119,7 +265,7 @@ async def initialize_task(
             "message": f"[-] {message_json['command']} has arguments with invalid values: \n"
             + str(traceback.format_exc()),
         }
-        await send_status(
+        await myConnection.send_status(
             message=json.dumps(message),
             command=command,
             status="verify_arguments_error",
@@ -131,9 +277,7 @@ async def initialize_task(
     return task
 
 
-async def callback(message: aio_pika.IncomingMessage):
-    global hostname
-    global container_files_path
+async def processMessage(message: aio_pika.IncomingMessage):
     async with message.process():
         # messages of the form: pt.task.PAYLOAD_TYPE.command
         pieces = message.routing_key.split(".")
@@ -157,7 +301,7 @@ async def callback(message: aio_pika.IncomingMessage):
                 for cls in PayloadBuilder.PayloadType.__subclasses__():
                     agent_builder = cls(
                         uuid=message_json["uuid"],
-                        agent_code_path=Path(container_files_path),
+                        agent_code_path=Path(myConnection.get_container_files_path()),
                         c2info=c2info_list,
                         selected_os=message_json["selected_os"],
                         commands=commands,
@@ -177,7 +321,7 @@ async def callback(message: aio_pika.IncomingMessage):
                         + str(traceback.format_exc()),
                         "payload": "",
                     }
-                    await send_status(
+                    await myConnection.send_status(
                         message=json.dumps(resp_message),
                         command="create_payload_with_code",
                         status="error",
@@ -198,7 +342,7 @@ async def callback(message: aio_pika.IncomingMessage):
                         "utf-8"
                     ),
                 }
-                await send_status(
+                await myConnection.send_status(
                     message=json.dumps(resp_message),
                     command="create_payload_with_code",
                     reference_id=reference_id,
@@ -214,7 +358,7 @@ async def callback(message: aio_pika.IncomingMessage):
                     "build_stderr": str(traceback.format_exc()),
                     "payload": "",
                 }
-                await send_status(
+                await myConnection.send_status(
                     message=json.dumps(resp_message),
                     command="create_payload_with_code",
                     status="error",
@@ -231,7 +375,7 @@ async def callback(message: aio_pika.IncomingMessage):
                     message_json["tasking_location"] = "command_line"
                 for cls in MythicCommandBase.CommandBase.__subclasses__():
                     if getattr(cls, "cmd") == message_json["command"]:
-                        Command = cls(Path(container_files_path))
+                        Command = cls(Path(myConnection.get_container_files_path()))
                         task = await initialize_task(
                             command_class=Command,
                             message_json=message_json,
@@ -257,10 +401,10 @@ async def callback(message: aio_pika.IncomingMessage):
                                     if type(ct).__name__ == "Exception":
                                         # we're looking at a generic exception, probably one raised on purpose by the function
                                         message["message"] = (
-                                            f"[-] {hostname} ran into an error processing an opsec_pre check for {message_json['command']}: \n"
+                                            f"[-] {myConnection.get_hostname()} ran into an error processing an opsec_pre check for {message_json['command']}: \n"
                                             + str(ct)
                                         )
-                                        await send_status(
+                                        await myConnection.send_status(
                                             message=json.dumps(message),
                                             command="command_transform",
                                             status="opsec_pre_error",
@@ -270,12 +414,12 @@ async def callback(message: aio_pika.IncomingMessage):
                                     else:
                                         # we're probably looking at an actual error
                                         message["message"] = (
-                                            f"[-] {hostname} ran into an error processing and opsec_pre check for {message_json['command']}: \n"
+                                            f"[-] {myConnection.get_hostname()} ran into an error processing and opsec_pre check for {message_json['command']}: \n"
                                             + str(ct)
                                             + "\n"
                                             + str(traceback.format_exc())
                                         )
-                                        await send_status(
+                                        await myConnection.send_status(
                                             message=json.dumps(message),
                                             command="command_transform",
                                             status="opsec_pre_error",
@@ -292,7 +436,7 @@ async def callback(message: aio_pika.IncomingMessage):
                                             "task": task.to_json(),
                                             "message": "",
                                         }
-                                        await send_status(
+                                        await myConnection.send_status(
                                             message=json.dumps(message),
                                             command="command_transform",
                                             status="opsec_pre_success",
@@ -314,10 +458,10 @@ async def callback(message: aio_pika.IncomingMessage):
                             if type(ct).__name__ == "Exception":
                                 # we're looking at a generic exception, probably one raised on purpose by the function
                                 message["message"] = (
-                                    f"[-] {hostname} ran into an error processing {message_json['command']}: \n"
+                                    f"[-] {myConnection.get_hostname()} ran into an error processing {message_json['command']}: \n"
                                     + str(ct)
                                 )
-                                await send_status(
+                                await myConnection.send_status(
                                     message=json.dumps(message),
                                     command="command_transform",
                                     status="create_tasking_error",
@@ -327,12 +471,12 @@ async def callback(message: aio_pika.IncomingMessage):
                             else:
                                 # we're probably looking at an actual error
                                 message["message"] = (
-                                    f"[-] {hostname} ran into an error processing {message_json['command']}: \n"
+                                    f"[-] {myConnection.get_hostname()} ran into an error processing {message_json['command']}: \n"
                                     + str(ct)
                                     + "\n"
                                     + str(traceback.format_exc())
                                 )
-                                await send_status(
+                                await myConnection.send_status(
                                     message=json.dumps(message),
                                     command="command_transform",
                                     status="create_tasking_error",
@@ -356,10 +500,10 @@ async def callback(message: aio_pika.IncomingMessage):
                                     if type(ct).__name__ == "Exception":
                                         # we're looking at a generic exception, probably one raised on purpose by the function
                                         message["message"] = (
-                                            f"[-] {hostname} ran into an error processing an opsec_post check for {message_json['command']}: \n"
+                                            f"[-] {myConnection.get_hostname()} ran into an error processing an opsec_post check for {message_json['command']}: \n"
                                             + str(ct)
                                         )
-                                        await send_status(
+                                        await myConnection.send_status(
                                             message=json.dumps(message),
                                             command="command_transform",
                                             status="opsec_post_error",
@@ -369,12 +513,12 @@ async def callback(message: aio_pika.IncomingMessage):
                                     else:
                                         # we're probably looking at an actual error
                                         message["message"] = (
-                                            f"[-] {hostname} ran into an error processing an opsec_post check for {message_json['command']}: \n"
+                                            f"[-] {myConnection.get_hostname()} ran into an error processing an opsec_post check for {message_json['command']}: \n"
                                             + str(ct)
                                             + "\n"
                                             + str(traceback.format_exc())
                                         )
-                                        await send_status(
+                                        await myConnection.send_status(
                                             message=json.dumps(message),
                                             command="command_transform",
                                             status="opsec_post_error",
@@ -388,7 +532,7 @@ async def callback(message: aio_pika.IncomingMessage):
                                 ):
                                     # send the results of the check
                                     message = {"task": task.to_json(), "message": ""}
-                                    await send_status(
+                                    await myConnection.send_status(
                                         message=json.dumps(message),
                                         command="command_transform",
                                         status="opsec_post_success",
@@ -397,7 +541,7 @@ async def callback(message: aio_pika.IncomingMessage):
                                     )
                                     return
                         message = {"task": task.to_json(), "message": ""}
-                        await send_status(
+                        await myConnection.send_status(
                             message=json.dumps(message),
                             command="command_transform",
                             status=final_task.status
@@ -413,7 +557,7 @@ async def callback(message: aio_pika.IncomingMessage):
                         "message": "Failed to find class where command_name = "
                         + message_json["command"],
                     }
-                    await send_status(
+                    await myConnection.send_status(
                         message=json.dumps(message),
                         command="command_transform",
                         status="error_not_found",
@@ -428,7 +572,7 @@ async def callback(message: aio_pika.IncomingMessage):
                     "message": "[-] Mythic error while creating/running create_tasking: \n"
                     + str(e),
                 }
-                await send_status(
+                await myConnection.send_status(
                     message=json.dumps(message),
                     command="command_transform",
                     status="general_error",
@@ -446,7 +590,7 @@ async def callback(message: aio_pika.IncomingMessage):
                 final_task = None
                 for cls in MythicCommandBase.CommandBase.__subclasses__():
                     if getattr(cls, "cmd") == message_json["command"]:
-                        Command = cls(Path(container_files_path))
+                        Command = cls(Path(myConnection.get_container_files_path()))
                         task = await initialize_task(
                             command_class=Command,
                             message_json=message_json,
@@ -462,7 +606,7 @@ async def callback(message: aio_pika.IncomingMessage):
                         await Command.process_response(agentResponse)
                         break
             except Exception as e:
-                await send_status(
+                await myConnection.send_status(
                     message="[-] Error while running process_response: \n" + str(e),
                     command="process_container",
                     status="error",
@@ -489,7 +633,7 @@ async def callback(message: aio_pika.IncomingMessage):
                 final_task = None
                 for cls in MythicCommandBase.CommandBase.__subclasses__():
                     if getattr(cls, "cmd") == message_json["command"]:
-                        Command = cls(Path(container_files_path))
+                        Command = cls(Path(myConnection.get_container_files_path()))
                         task = await initialize_task(
                             command_class=Command,
                             message_json=message_json,
@@ -516,10 +660,10 @@ async def callback(message: aio_pika.IncomingMessage):
                                     "task": task.to_json(),
                                     "updating_task": message_json["updating_task"],
                                     "updating_piece": message_json["updating_piece"],
-                                    "message": f"[-] {hostname} hit an exception in callback function, {message_json['function_name']} for {message_json['command']}: \n"
+                                    "message": f"[-] {myConnection.get_hostname()} hit an exception in callback function, {message_json['function_name']} for {message_json['command']}: \n"
                                     + str(traceback.format_exc()),
                                 }
-                                await send_status(
+                                await myConnection.send_status(
                                     message=json.dumps(message),
                                     command="task_callback_function",
                                     status="handler_error",
@@ -534,7 +678,7 @@ async def callback(message: aio_pika.IncomingMessage):
                                 "updating_piece": message_json["updating_piece"],
                                 "message": "",
                             }
-                            await send_status(
+                            await myConnection.send_status(
                                 message=json.dumps(message),
                                 command="task_callback_function",
                                 status=final_task.status
@@ -548,9 +692,9 @@ async def callback(message: aio_pika.IncomingMessage):
                                 "task": task.to_json(),
                                 "updating_task": message_json["updating_task"],
                                 "updating_piece": message_json["updating_piece"],
-                                "message": f"[-] {hostname} failed to find callback function, {message_json['function_name']} for {message_json['command']}",
+                                "message": f"[-] {myConnection.get_hostname()} failed to find callback function, {message_json['function_name']} for {message_json['command']}",
                             }
-                            await send_status(
+                            await myConnection.send_status(
                                 message=json.dumps(message),
                                 command="task_callback_function",
                                 status="not_found_error",
@@ -566,7 +710,7 @@ async def callback(message: aio_pika.IncomingMessage):
                     "message": "[-] Mythic error while creating/running task_callback_function: \n"
                     + str(traceback.format_exc()),
                 }
-                await send_status(
+                await myConnection.send_status(
                     message=json.dumps(message),
                     command="task_callback_function",
                     status="generic_error",
@@ -576,6 +720,10 @@ async def callback(message: aio_pika.IncomingMessage):
                 return
         else:
             print("Unknown command: {}".format(command))
+
+
+async def callback(message: aio_pika.IncomingMessage):
+    asyncio.create_task(processMessage(message))
 
 
 async def sync_classes(reference_id: str = ""):
@@ -588,15 +736,19 @@ async def sync_classes(reference_id: str = ""):
             "[*] Agent function import completed. Now to parse the Payload and Command information"
         )
         for cls in PayloadBuilder.PayloadType.__subclasses__():
-            payload_type = cls(agent_code_path=Path(container_files_path)).to_json()
+            payload_type = cls(
+                agent_code_path=Path(myConnection.get_container_files_path())
+            ).to_json()
             break
         for cls in MythicCommandBase.CommandBase.__subclasses__():
-            commands[cls.cmd] = cls(Path(container_files_path)).to_json()
+            commands[cls.cmd] = cls(
+                Path(myConnection.get_container_files_path())
+            ).to_json()
         payload_type["commands"] = commands
         print_flush(
             "[*] Payload and Command parsing completed. Now sending sync to Mythic"
         )
-        await send_status(
+        await myConnection.send_status(
             json.dumps(payload_type),
             command="sync_classes",
             status="success",
@@ -609,40 +761,22 @@ async def sync_classes(reference_id: str = ""):
             + str(traceback.format_exc()),
             override=True,
         )
-        await send_status(
+        await myConnection.send_status(
             message="Error while syncing info: " + str(traceback.format_exc()),
             command="sync_classes",
             status="error",
             username="",
             reference_id=reference_id,
         )
-        sys.exit(1)
+        # sys.exit(1)
 
 
 async def connect_to_rabbitmq():
-    global hostname
-    global exchange
-    global channel
-    global queue
-    global connection
-    global container_files_path
-    if queue is not None:
-        return
     # need to get the name of the agent we're trying to sync
     print_flush(
         "[*] About to import all of the agent's functions to get the agent name"
     )
     import_all_agent_functions()
-    print_flush("[*] Agent function import completed. Now to parse the Payload")
-    for cls in PayloadBuilder.PayloadType.__subclasses__():
-        payload_type = cls(agent_code_path=Path(container_files_path))
-        hostname = payload_type.name
-    print_flush(
-        "[*] Setting hostname (which should match payload type name exactly) to: "
-        + hostname,
-        override=True,
-    )
-    # the path for both the `mythic` folder and the `agent_code` folder is one up from where this file is located
     container_files_path = str(
         Path(os.path.abspath(os.path.dirname(sys.argv[0]))).parent
     )
@@ -659,94 +793,29 @@ async def connect_to_rabbitmq():
         print_flush(f"[-] ex: C:\\Users\\username\\Desktop\\AgentName\\", override=True)
         print_flush(f"[-] ex: /Users/username/AgentName/", override=True)
         sys.exit(1)
-    while True:
-        try:
-            print_flush(
-                "[*] Trying to connect to rabbitmq at: "
-                + settings.get("host", "127.0.0.1")
-                + ":"
-                + str(settings.get("port", 5672)),
-                override=True,
-            )
-            connection = await aio_pika.connect_robust(
-                host=settings.get("host", "127.0.0.1"),
-                port=settings.get("port", 5672),
-                login=settings.get("username", "mythic_user"),
-                password=settings.get("password", "mythic_password"),
-                virtualhost="mythic_vhost",
-            )
-            print_flush("[*] connecting to channel, then declaring exchange")
-            channel = await connection.channel()
-            # declare our heartbeat exchange that everybody will publish to, but only the mythic server will are about
-            print_flush("[*] declaring exchange, then declaring queue")
-            exchange = await channel.declare_exchange(
-                "mythic_traffic", aio_pika.ExchangeType.TOPIC
-            )
-            # get a random queue that only the mythic server will use to listen on to catch all heartbeats
-            queue = await channel.declare_queue(hostname + "_tasking")
-            print_flush("[*] binding to exchange, then ready to go")
-            # bind the queue to the exchange so we can actually catch messages
-            await queue.bind(
-                exchange="mythic_traffic", routing_key="pt.task.{}.#".format(hostname)
-            )
+    myConnection.set_container_files_path(container_files_path)
+    print_flush("[*] Agent function import completed. Now to parse the Payload")
+    for cls in PayloadBuilder.PayloadType.__subclasses__():
+        payload_type = cls(agent_code_path=Path(container_files_path))
+        myConnection.set_hostname(payload_type.name)
+        # hostname = payload_type.name
+    print_flush(
+        "[*] Setting hostname (which should match payload type name exactly) to: "
+        + payload_type.name,
+        override=True,
+    )
+    # the path for both the `mythic` folder and the `agent_code` folder is one up from where this file is located
 
-            # just want to handle one message at a time so we can clean up and be ready
-            await channel.set_qos(
-                prefetch_count=int(settings.get("queue_prefetch", "10"))
-            )
-            print_flush("[+] Ready to go!", override=True)
-            return
-        except Exception as e:
-            print_flush(str(e))
-            await asyncio.sleep(2)
-            continue
+    await myConnection.connect()
 
 
 async def heartbeat():
-    global exchange
-    global queue
-    global channel
-    global hostname
-    try:
-        if exchange is not None:
-            while True:
-                try:
-                    queue = await channel.get_queue(hostname + "_tasking")
-                    await exchange.publish(
-                        aio_pika.Message("".encode()),
-                        routing_key="pt.heartbeat.{}.{}.{}".format(
-                            hostname,
-                            container_version,
-                            str(queue.declaration_result.consumer_count),
-                        ),
-                    )
-                    await asyncio.sleep(10)
-                except Exception as e:
-                    print_flush(
-                        "[*] heartbeat - exception in heartbeat message loop:\n "
-                        + str(traceback.format_exc()),
-                        override=True,
-                    )
-                    sys.exit(1)
-        else:
-            print_flush(
-                "[-] Failed to process heartbeat functionality, exiting container:\n "
-                + str(traceback.format_exc()),
-                override=True,
-            )
-            sys.exit(1)
-    except Exception as h:
-        print_flush(
-            "[-] Failed to process heartbeat functionality, exiting container:\n "
-            + str(traceback.format_exc()),
-            override=True,
-        )
-        sys.exit(1)
+    while True:
+        await myConnection.send_heartbeat()
+        await asyncio.sleep(10)
 
 
 async def mythic_service():
-    global hostname
-    global queue
 
     try:
         print_flush(
@@ -755,10 +824,12 @@ async def mythic_service():
             ),
             override=True,
         )
-        task = queue.consume(callback)
+        queue = await myConnection.get_queue()
+        task = await queue.consume(callback)
         print_flush(
             "[*] mythic_service - total instances of {} container running: {}".format(
-                hostname, queue.declaration_result.consumer_count + 1
+                myConnection.get_hostname(),
+                queue.declaration_result.consumer_count + 1,
             ),
             override=True,
         )
@@ -769,11 +840,8 @@ async def mythic_service():
         print_flush("[*] Successfuly synced with Mythic server, waiting for tasking")
         result = await asyncio.wait_for(task, None)
     except Exception as e:
-        print_flush(
-            "[-] mythic_service - exception, exiting container\n "
-            + str(traceback.format_exc())
-        )
-        sys.exit(1)
+        print_flush("[-] mythic_service - exception\n " + str(traceback.format_exc()))
+        # sys.exit(1)
 
 
 async def rabbit_mythic_rpc_callback(
@@ -789,7 +857,7 @@ async def rabbit_mythic_rpc_callback(
             }
             for cls in MythicCommandBase.CommandBase.__subclasses__():
                 if getattr(cls, "cmd") == message_json["command"]:
-                    Command = cls(Path(container_files_path))
+                    Command = cls(Path(myConnection.get_container_files_path()))
                     CommandArgs = Command.argument_class("")
                     # now iterate over the args to find the one with name=request["action"]
                     for command_param in CommandArgs.args:
@@ -807,39 +875,21 @@ async def rabbit_mythic_rpc_callback(
                 override=True,
             )
             response = {"status": "error", "error": str(e)}
-        try:
-            await exchange.publish(
-                aio_pika.Message(
-                    body=json.dumps(response).encode(),
-                    correlation_id=message.correlation_id,
-                ),
-                routing_key=message.reply_to,
-            )
-        except Exception as e:
-            print_flush(
-                "[-] Exception trying to send message back to container for rpc! "
-                + str(sys.exc_info()[-1].tb_lineno)
-                + " "
-                + str(e),
-                override=True,
-            )
+        await myConnection.exchange_publish(response, exchange, message)
 
 
 async def connect_and_consume_mythic_rpc():
-    global channel
-    global hostname
     # get a random queue that only the apfell server will use to listen on to catch all heartbeats
     print_flush(
         "[*] Declaring container specific rpc queue in connect_and_consume_mythic_rpc"
     )
-    queue = await channel.declare_queue(
-        "{}_mythic_rpc_queue".format(hostname), auto_delete=True
-    )
+    channel = await myConnection.get_channel()
     await channel.set_qos(prefetch_count=int(settings.get("queue_prefetch_rpc", "10")))
     try:
         print_flush(
             "[*] Starting to consume messages in connect_and_consume_mythic_rpc"
         )
+        queue = await myConnection.get_mythic_rpc_queue()
         task = await queue.consume(
             partial(rabbit_mythic_rpc_callback, channel.default_exchange)
         )
@@ -850,7 +900,7 @@ async def connect_and_consume_mythic_rpc():
             ),
             override=True,
         )
-        sys.exit(1)
+        # sys.exit(1)
 
 
 # start our service

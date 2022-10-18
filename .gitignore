@@ -3,3 +3,11 @@ dist/
 mythic.egg-info/
 mythic_payloadtype_container.egg-info/
 mythic_payloadtype_container/.DS_Store
+mythic_service.py
+payload_service.sh
+rabbitmq_config.json
+pycookiecheat/
+chainbreaker/
+agent_functions/
+browser_scripts/
+.DS_Store
