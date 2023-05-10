@@ -1,3 +1,7 @@
+# Deprecated
+
+This PyPi package is deprecated in favor of the more generic `mythic-container` PyPi package and the https://github.com/MythicMeta/MythicContainerPyPi repository.
+
 # Mythic Payload Type Container
 
 The `mythic_payloadtype_container` package creates an easy way to get everything set up in a new PayloadType container for a Mythic supported Payload Type. Mythic is a Command and Control (C2) framework for Red Teaming. The code is on GitHub (https://github.com/its-a-feature/Mythic) and the Mythic project's documentation is on GitBooks (https://docs.mythic-c2.net). This code will be included in the default Mythic Payload Type containers, but is available for anybody making custom containers as well.
